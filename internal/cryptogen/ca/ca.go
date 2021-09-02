@@ -36,6 +36,7 @@ type CA struct {
 	PostalCode         string
 	Signer             crypto.Signer
 	SignCert           *x509.Certificate
+        priv               *ecdsa.PrivateKey
 }
 
 // NewCA creates an instance of CA and saves the signing key pair in
@@ -105,6 +106,7 @@ func NewCA(
 		OrganizationalUnit: orgUnit,
 		StreetAddress:      streetAddress,
 		PostalCode:         postalCode,
+                priv:               priv,
 	}
 
 	return ca, err

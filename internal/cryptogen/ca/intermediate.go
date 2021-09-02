@@ -54,29 +54,32 @@ func NewIntermediateCA(
 
 	template.Subject = subject
 	template.SubjectKeyId = computeSKI(priv)
-/*
+
 	x509Cert, err := genCertificateECDSA(
 		baseDir,
 		name,
 		&template,
-		&template,
+		signCA.SignCert,
 		&priv.PublicKey,
-		priv,
+		signCA.priv,
 	)
 	if err != nil {
 		return nil, err
 	}
-*/
+
 	ca = &CA{
 		Name: name,
-		Signer:             signCA.Signer, 
-		SignCert:           signCA.SignCert,
+                Signer: &csp.ECDSASigner{
+                        PrivateKey: priv,
+                },
+		SignCert:           x509Cert,
 		Country:            country,
 		Province:           province,
 		Locality:           locality,
 		OrganizationalUnit: orgUnit,
 		StreetAddress:      streetAddress,
 		PostalCode:         postalCode,
+                priv:               priv,
 	}
 
 	return ca, err
