@@ -13,7 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"text/template"
-
+        
 	"github.com/hyperledger/fabric/internal/cryptogen/ca"
 	"github.com/hyperledger/fabric/internal/cryptogen/csp"
 	"github.com/hyperledger/fabric/internal/cryptogen/metadata"
@@ -75,13 +75,34 @@ type OrgSpec struct {
 	Specs         []NodeSpec   `yaml:"Specs"`
 	Users         UsersSpec    `yaml:"Users"`
 }
+type RootCASpec struct {
+        Domain        string       `yaml:"Domain"`
+	CA            NodeSpec     `yaml:"CA"`
 
+}
 type Config struct {
+        rootCA  RootCASpec`yaml:"RootCA"`
 	OrdererOrgs []OrgSpec `yaml:"OrdererOrgs"`
 	PeerOrgs    []OrgSpec `yaml:"PeerOrgs"`
 }
 
 var defaultConfig = `
+RootCA:
+   - Domain: example.com
+    # ---------------------------------------------------------------------------
+    # "CA"
+    # ---------------------------------------------------------------------------
+    # Uncomment this section to enable the explicit definition of the CA for this
+    # organization.  This entry is a Spec.  See "Specs" section below for details.
+    # ---------------------------------------------------------------------------
+    # CA:
+    #    Hostname: ca # implicitly ca.org1.example.com
+    #    Country: US
+    #    Province: California
+    #    Locality: San Francisco
+    #    OrganizationalUnit: Hyperledger Fabric
+    #    StreetAddress: address for org # default nil
+    #    PostalCode: postalCode for org # default nil
 # ---------------------------------------------------------------------------
 # "OrdererOrgs" - Definition of organizations managing orderer nodes
 # ---------------------------------------------------------------------------
@@ -274,13 +295,16 @@ func extend() {
 		os.Exit(-1)
 	}
 
+        rootcaDir := filepath.Join(*inputDir, "ca");
+
+	rootCA := getCA(rootcaDir, config.rootCA.CA, config.rootCA.Domain)
 	for _, orgSpec := range config.PeerOrgs {
 		err = renderOrgSpec(&orgSpec, "peer")
 		if err != nil {
 			fmt.Printf("Error processing peer configuration: %s", err)
 			os.Exit(-1)
 		}
-		extendPeerOrg(orgSpec)
+		extendPeerOrg(orgSpec,rootCA)
 	}
 
 	for _, orgSpec := range config.OrdererOrgs {
@@ -289,15 +313,15 @@ func extend() {
 			fmt.Printf("Error processing orderer configuration: %s", err)
 			os.Exit(-1)
 		}
-		extendOrdererOrg(orgSpec)
+		extendOrdererOrg(orgSpec,rootCA)
 	}
 }
 
-func extendPeerOrg(orgSpec OrgSpec) {
+func extendPeerOrg(orgSpec OrgSpec,rootCA *ca.CA) {
 	orgName := orgSpec.Domain
 	orgDir := filepath.Join(*inputDir, "peerOrganizations", orgName)
 	if _, err := os.Stat(orgDir); os.IsNotExist(err) {
-		generatePeerOrg(*inputDir, orgSpec)
+		generatePeerOrg(*inputDir, orgSpec,rootCA)
 		return
 	}
 
@@ -306,8 +330,8 @@ func extendPeerOrg(orgSpec OrgSpec) {
 	caDir := filepath.Join(orgDir, "ca")
 	tlscaDir := filepath.Join(orgDir, "tlsca")
 
-	signCA := getCA(caDir, orgSpec, orgSpec.CA.CommonName)
-	tlsCA := getCA(tlscaDir, orgSpec, "tls"+orgSpec.CA.CommonName)
+	signCA := getCA(caDir, orgSpec.CA, orgSpec.CA.CommonName)
+	tlsCA := getCA(tlscaDir, orgSpec.CA, "tls"+orgSpec.CA.CommonName)
 
 	generateNodes(peersDir, orgSpec.Specs, signCA, tlsCA, msp.PEER, orgSpec.EnableNodeOUs)
 
@@ -342,7 +366,7 @@ func extendPeerOrg(orgSpec OrgSpec) {
 	generateNodes(usersDir, users, signCA, tlsCA, msp.CLIENT, orgSpec.EnableNodeOUs)
 }
 
-func extendOrdererOrg(orgSpec OrgSpec) {
+func extendOrdererOrg(orgSpec OrgSpec,rootCA *ca.CA) {
 	orgName := orgSpec.Domain
 
 	orgDir := filepath.Join(*inputDir, "ordererOrganizations", orgName)
@@ -351,12 +375,12 @@ func extendOrdererOrg(orgSpec OrgSpec) {
 	tlscaDir := filepath.Join(orgDir, "tlsca")
 	orderersDir := filepath.Join(orgDir, "orderers")
 	if _, err := os.Stat(orgDir); os.IsNotExist(err) {
-		generateOrdererOrg(*inputDir, orgSpec)
+		generateOrdererOrg(*inputDir, orgSpec,rootCA )
 		return
 	}
 
-	signCA := getCA(caDir, orgSpec, orgSpec.CA.CommonName)
-	tlsCA := getCA(tlscaDir, orgSpec, "tls"+orgSpec.CA.CommonName)
+	signCA := getCA(caDir, orgSpec.CA, orgSpec.CA.CommonName)
+	tlsCA := getCA(tlscaDir, orgSpec.CA, "tls"+orgSpec.CA.CommonName)
 
 	generateNodes(orderersDir, orgSpec.Specs, signCA, tlsCA, msp.ORDERER, orgSpec.EnableNodeOUs)
 
@@ -385,14 +409,22 @@ func generate() {
 		fmt.Printf("Error reading config: %s", err)
 		os.Exit(-1)
 	}
+	// generate CAs
+	caDir := filepath.Join(*outputDir, "rootca")
+	// generate signing CA
+	rootCA, err := ca.NewCA(caDir, config.rootCA.Domain, config.rootCA.CA.CommonName, config.rootCA.CA.Country, config.rootCA.CA.Province, config.rootCA.CA.Locality, config.rootCA.CA.OrganizationalUnit, config.rootCA.CA.StreetAddress, config.rootCA.CA.PostalCode);
 
+	if err != nil {
+		fmt.Printf("Error generating rootCA \n%v\n",  err)
+		os.Exit(1)
+	}
 	for _, orgSpec := range config.PeerOrgs {
 		err = renderOrgSpec(&orgSpec, "peer")
 		if err != nil {
 			fmt.Printf("Error processing peer configuration: %s", err)
 			os.Exit(-1)
 		}
-		generatePeerOrg(*outputDir, orgSpec)
+		generatePeerOrg(*outputDir, orgSpec,rootCA)
 	}
 
 	for _, orgSpec := range config.OrdererOrgs {
@@ -401,7 +433,7 @@ func generate() {
 			fmt.Printf("Error processing orderer configuration: %s", err)
 			os.Exit(-1)
 		}
-		generateOrdererOrg(*outputDir, orgSpec)
+		generateOrdererOrg(*outputDir, orgSpec,rootCA)
 	}
 }
 
@@ -506,7 +538,7 @@ func renderOrgSpec(orgSpec *OrgSpec, prefix string) error {
 	return nil
 }
 
-func generatePeerOrg(baseDir string, orgSpec OrgSpec) {
+func generatePeerOrg(baseDir string, orgSpec OrgSpec,rootCA *ca.CA) {
 	orgName := orgSpec.Domain
 
 	fmt.Println(orgName)
@@ -519,7 +551,7 @@ func generatePeerOrg(baseDir string, orgSpec OrgSpec) {
 	usersDir := filepath.Join(orgDir, "users")
 	adminCertsDir := filepath.Join(mspDir, "admincerts")
 	// generate signing CA
-	signCA, err := ca.NewCA(caDir, orgName, orgSpec.CA.CommonName, orgSpec.CA.Country, orgSpec.CA.Province, orgSpec.CA.Locality, orgSpec.CA.OrganizationalUnit, orgSpec.CA.StreetAddress, orgSpec.CA.PostalCode)
+	signCA, err := ca.NewIntermediateCA(caDir, orgName, orgSpec.CA.CommonName, orgSpec.CA.Country, orgSpec.CA.Province, orgSpec.CA.Locality, orgSpec.CA.OrganizationalUnit, orgSpec.CA.StreetAddress, orgSpec.CA.PostalCode,rootCA)
 	if err != nil {
 		fmt.Printf("Error generating signCA for org %s:\n%v\n", orgName, err)
 		os.Exit(1)
@@ -623,7 +655,7 @@ func generateNodes(baseDir string, nodes []NodeSpec, signCA *ca.CA, tlsCA *ca.CA
 	}
 }
 
-func generateOrdererOrg(baseDir string, orgSpec OrgSpec) {
+func generateOrdererOrg(baseDir string, orgSpec OrgSpec,rootCA *ca.CA){
 	orgName := orgSpec.Domain
 
 	// generate CAs
@@ -635,13 +667,13 @@ func generateOrdererOrg(baseDir string, orgSpec OrgSpec) {
 	usersDir := filepath.Join(orgDir, "users")
 	adminCertsDir := filepath.Join(mspDir, "admincerts")
 	// generate signing CA
-	signCA, err := ca.NewCA(caDir, orgName, orgSpec.CA.CommonName, orgSpec.CA.Country, orgSpec.CA.Province, orgSpec.CA.Locality, orgSpec.CA.OrganizationalUnit, orgSpec.CA.StreetAddress, orgSpec.CA.PostalCode)
+	signCA, err := ca.NewIntermediateCA(caDir, orgName, orgSpec.CA.CommonName, orgSpec.CA.Country, orgSpec.CA.Province, orgSpec.CA.Locality, orgSpec.CA.OrganizationalUnit, orgSpec.CA.StreetAddress, orgSpec.CA.PostalCode,rootCA)
 	if err != nil {
 		fmt.Printf("Error generating signCA for org %s:\n%v\n", orgName, err)
 		os.Exit(1)
 	}
 	// generate TLS CA
-	tlsCA, err := ca.NewCA(tlsCADir, orgName, "tls"+orgSpec.CA.CommonName, orgSpec.CA.Country, orgSpec.CA.Province, orgSpec.CA.Locality, orgSpec.CA.OrganizationalUnit, orgSpec.CA.StreetAddress, orgSpec.CA.PostalCode)
+	tlsCA, err := ca.NewIntermediateCA(tlsCADir, orgName, "tls"+orgSpec.CA.CommonName, orgSpec.CA.Country, orgSpec.CA.Province, orgSpec.CA.Locality, orgSpec.CA.OrganizationalUnit, orgSpec.CA.StreetAddress, orgSpec.CA.PostalCode,rootCA)
 	if err != nil {
 		fmt.Printf("Error generating tlsCA for org %s:\n%v\n", orgName, err)
 		os.Exit(1)
@@ -714,7 +746,7 @@ func printVersion() {
 	fmt.Println(metadata.GetVersionInfo())
 }
 
-func getCA(caDir string, spec OrgSpec, name string) *ca.CA {
+func getCA(caDir string, spec NodeSpec, name string) *ca.CA {
 	priv, _ := csp.LoadPrivateKey(caDir)
 	cert, _ := ca.LoadCertificateECDSA(caDir)
 
@@ -722,11 +754,11 @@ func getCA(caDir string, spec OrgSpec, name string) *ca.CA {
 		Name:               name,
 		Signer:             priv,
 		SignCert:           cert,
-		Country:            spec.CA.Country,
-		Province:           spec.CA.Province,
-		Locality:           spec.CA.Locality,
-		OrganizationalUnit: spec.CA.OrganizationalUnit,
-		StreetAddress:      spec.CA.StreetAddress,
-		PostalCode:         spec.CA.PostalCode,
+		Country:            spec.Country,
+		Province:           spec.Province,
+		Locality:           spec.Locality,
+		OrganizationalUnit: spec.OrganizationalUnit,
+		StreetAddress:      spec.StreetAddress,
+		PostalCode:         spec.PostalCode,
 	}
 }
